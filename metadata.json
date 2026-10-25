@@ -1,0 +1,10 @@
+{
+  "name": "NA Distributors",
+  "description": "Enterprise spice distribution and inventory management system with multi-tier pricing, barcode scanning, order invoicing, and financial reporting.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

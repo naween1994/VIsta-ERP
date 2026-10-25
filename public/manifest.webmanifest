@@ -1,0 +1,21 @@
+{
+  "name": "NA Distributors - Spice Distribution & Inventory",
+  "short_name": "NA Distributors",
+  "description": "Enterprise spice distribution and inventory management system with multi-tier pricing, barcode scanning, order invoicing, and financial reporting.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#b45309",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
