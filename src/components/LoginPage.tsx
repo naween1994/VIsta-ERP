@@ -116,7 +116,7 @@ export const LoginPage: React.FC = () => {
           <div className="flex items-center space-x-3">
             <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-950/60 text-emerald-400 border border-emerald-800/50">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>API Gateway Online</span>
+              <span>API Gateway Online.</span>
             </div>
           </div>
         </div>
