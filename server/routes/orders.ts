@@ -115,7 +115,7 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   const { adminPassword } = req.body;
   const admin = db.getState().users.find((u) => u.role === 'admin');
-  if (admin?.password && admin.password !== adminPassword) {
+  if (!admin || !db.verifyUserPassword(admin.id, adminPassword)) {
     return res.status(403).json({ success: false, message: 'Invalid admin confirmation password' });
   }
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { 
   User, 
   Product, 
@@ -12,6 +13,7 @@ import type {
   DeliveryRoute
 } from '../src/types/index.ts';
 import { mongoService } from './mongo.ts';
+import { hashPassword, isPasswordHashed, verifyPassword } from './password.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -824,6 +826,48 @@ class Database {
     return this.state;
   }
 
+  public loadFromPersistentState(state: Partial<DatabaseState>) {
+    if (state.users) this.state.users = state.users;
+    if (state.products) this.state.products = state.products;
+    if (state.customers) this.state.customers = state.customers;
+    if (state.orders) this.state.orders = state.orders;
+    if (state.stockAdjustments) this.state.stockAdjustments = state.stockAdjustments;
+    if (state.notifications) this.state.notifications = state.notifications;
+    if (state.accountingLogs) this.state.accountingLogs = state.accountingLogs;
+    if (state.settings) this.state.settings = { ...this.state.settings, ...state.settings };
+    if (state.deliveryRoutes) this.state.deliveryRoutes = state.deliveryRoutes;
+    this.saveToDisk();
+  }
+
+  public prepareForProduction(initialAdminPassword: string) {
+    if (initialAdminPassword.length < 12) {
+      throw new Error('INITIAL_ADMIN_PASSWORD must be at least 12 characters long.');
+    }
+
+    let changed = false;
+    for (const user of this.state.users) {
+      if (!isPasswordHashed(user.password)) {
+        const usesDefaultPassword = !user.password || user.password === 'password123';
+        const password = usesDefaultPassword
+          ? user.role === 'admin'
+            ? initialAdminPassword
+            : randomBytes(32).toString('base64url')
+          : user.password;
+        if (password) user.password = hashPassword(password);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.saveToDisk();
+      for (const user of this.state.users) {
+        mongoService.upsertDocument('users', user.id, user).catch((err) => {
+          console.warn('[MongoDB User Password Migration Notice]', err.message);
+        });
+      }
+    }
+  }
+
   // Users
   public getUsers() {
     return this.state.users.map(({ password, ...rest }) => rest);
@@ -836,22 +880,47 @@ class Database {
   public authenticate(email: string, passwordAttempt: string) {
     const user = this.state.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (!user) return null;
-    if (user.password && user.password !== passwordAttempt) return null;
+    if (!verifyPassword(user.password, passwordAttempt)) return null;
+    if (!isPasswordHashed(user.password)) {
+      user.password = hashPassword(passwordAttempt);
+      this.saveToDisk();
+      mongoService.upsertDocument('users', user.id, user).catch((err) => {
+        console.warn('[MongoDB User Password Upgrade Notice]', err.message);
+      });
+    }
     const { password, ...rest } = user;
     return rest;
   }
 
+  public verifyUserPassword(id: string, passwordAttempt: string): boolean {
+    const user = this.state.users.find((item) => item.id === id);
+    return Boolean(user && verifyPassword(user.password, passwordAttempt));
+  }
+
   public addUser(user: User) {
+    if (user.password && !isPasswordHashed(user.password)) {
+      user.password = hashPassword(user.password);
+    }
     this.state.users.push(user);
     this.saveToDisk();
+    mongoService.upsertDocument('users', user.id, user).catch((err) => {
+      console.warn('[MongoDB User Save Notice]', err.message);
+    });
     return user;
   }
 
   public updateUser(id: string, updates: Partial<User>) {
     const index = this.state.users.findIndex((u) => u.id === id);
     if (index === -1) return null;
-    this.state.users[index] = { ...this.state.users[index], ...updates };
+    const normalizedUpdates = { ...updates };
+    if (normalizedUpdates.password && !isPasswordHashed(normalizedUpdates.password)) {
+      normalizedUpdates.password = hashPassword(normalizedUpdates.password);
+    }
+    this.state.users[index] = { ...this.state.users[index], ...normalizedUpdates };
     this.saveToDisk();
+    mongoService.upsertDocument('users', id, this.state.users[index]).catch((err) => {
+      console.warn('[MongoDB User Update Notice]', err.message);
+    });
     const { password, ...rest } = this.state.users[index];
     return rest;
   }
@@ -860,6 +929,9 @@ class Database {
     const initialLen = this.state.users.length;
     this.state.users = this.state.users.filter((u) => u.id !== id);
     this.saveToDisk();
+    mongoService.deleteDocument('users', id).catch((err) => {
+      console.warn('[MongoDB User Delete Notice]', err.message);
+    });
     return this.state.users.length < initialLen;
   }
 
@@ -912,9 +984,17 @@ class Database {
   }
 
   public resetProductsCatalog() {
+    const products = this.state.products;
+    const adjustments = this.state.stockAdjustments;
     this.state.products = [];
     this.state.stockAdjustments = [];
     this.saveToDisk();
+    for (const product of products) {
+      mongoService.deleteDocument('products', product.id).catch(() => {});
+    }
+    for (const adjustment of adjustments) {
+      mongoService.deleteDocument('stock_adjustments', adjustment.id).catch(() => {});
+    }
     notifyRealtimeChange('products', 'reset', {});
   }
 
@@ -1200,6 +1280,11 @@ class Database {
   public markAllNotificationsRead() {
     this.state.notifications.forEach((n) => (n.read = true));
     this.saveToDisk();
+    for (const notification of this.state.notifications) {
+      mongoService.upsertDocument('notifications', notification.id, notification).catch((err) => {
+        console.warn('[MongoDB Notification Update Notice]', err.message);
+      });
+    }
     notifyRealtimeChange('notifications', 'mark_all_read', {});
   }
 

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { 
   ShieldCheck, 
-  UserCheck, 
   KeyRound, 
   UserPlus, 
   Calculator, 
@@ -15,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useApp } from '../context/AppContext.tsx';
-import { UserRole } from '../types/index.ts';
+import { User, UserRole } from '../types/index.ts';
 import { api } from '../utils/api.ts';
 import { AdminConfirmModal } from './modals/AdminConfirmModal.tsx';
 import { calculateDistributorPrice, getVolumeDiscountTier } from '../utils/pricing.ts';
@@ -36,7 +35,7 @@ const AVAILABLE_PERMISSIONS = [
 ];
 
 export const UsersView: React.FC = () => {
-  const { currentUser, users, switchUser, refreshUsers, isAdmin } = useAuth();
+  const { currentUser, users, refreshUsers, isAdmin } = useAuth();
   const { addToast } = useApp();
 
   // Password change state
@@ -50,7 +49,11 @@ export const UsersView: React.FC = () => {
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState<UserRole>('sales_rep');
-  const [newUserPassword, setNewUserPassword] = useState('password123');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
+  const [resetPasswordError, setResetPasswordError] = useState('');
   const [selectedPermissions, setSelectedPermissions] = useState<string[]>([
     'sales_read',
     'sales_write',
@@ -83,8 +86,8 @@ export const UsersView: React.FC = () => {
       setPasswordMsg({ text: 'New passwords do not match.', isError: true });
       return;
     }
-    if (newPassword.length < 6) {
-      setPasswordMsg({ text: 'Password must be at least 6 characters.', isError: true });
+    if (newPassword.length < 12) {
+      setPasswordMsg({ text: 'Password must be at least 12 characters.', isError: true });
       return;
     }
 
@@ -114,10 +117,34 @@ export const UsersView: React.FC = () => {
       addToast({ type: 'success', title: 'User Created', message: `${newUserName} added to system` });
       setNewUserName('');
       setNewUserEmail('');
+      setNewUserPassword('');
       setIsCreatingUser(false);
       refreshUsers();
     } catch (err: any) {
       addToast({ type: 'error', title: 'Error', message: err.message });
+    }
+  };
+
+  const handleResetUserPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordUser) return;
+    if (resetPassword.length < 12) {
+      setResetPasswordError('Password must be at least 12 characters.');
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setResetPasswordError('Passwords do not match.');
+      return;
+    }
+    try {
+      await api.updateUser(resetPasswordUser.id, { password: resetPassword });
+      addToast({ type: 'success', title: 'Password Reset', message: `Password updated for ${resetPasswordUser.name}` });
+      setResetPasswordUser(null);
+      setResetPassword('');
+      setResetPasswordConfirm('');
+      setResetPasswordError('');
+    } catch (err: any) {
+      setResetPasswordError(err.message || 'Failed to reset user password.');
     }
   };
 
@@ -228,23 +255,6 @@ export const UsersView: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-gray-400 mr-1">Switch to:</span>
-            {users.map((u) => (
-              <button
-                key={u.id}
-                onClick={() => switchUser(u.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 border ${
-                  currentUser?.id === u.id
-                    ? 'bg-amber-800 text-white border-amber-900 shadow-xs'
-                    : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
-                }`}
-              >
-                <span>{u.name.split(' ')[0]}</span>
-                <span className="text-[10px] opacity-75">({u.role.split('_')[0]})</span>
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Permissions assigned to active account */}
@@ -295,7 +305,7 @@ export const UsersView: React.FC = () => {
                 required
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Enter current password (default: password123)..."
+                placeholder="Enter your current password..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 outline-hidden"
               />
             </div>
@@ -310,7 +320,7 @@ export const UsersView: React.FC = () => {
                   required
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Min 6 characters..."
+                  placeholder="At least 12 characters..."
                   className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 outline-hidden"
                 />
               </div>
@@ -493,13 +503,27 @@ export const UsersView: React.FC = () => {
                   </td>
                   <td className="px-4 py-3 text-center">
                     {isAdmin && u.id !== currentUser?.id && (
-                      <button
-                        onClick={() => handleDeleteUserPrompt(u)}
-                        className="p-1 text-red-500 hover:bg-red-50 rounded"
-                        title="Delete user"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            setResetPasswordUser(u);
+                            setResetPassword('');
+                            setResetPasswordConfirm('');
+                            setResetPasswordError('');
+                          }}
+                          className="p-1 text-amber-700 hover:bg-amber-50 rounded"
+                          title="Reset user password"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUserPrompt(u)}
+                          className="p-1 text-red-500 hover:bg-red-50 rounded"
+                          title="Delete user"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -573,6 +597,7 @@ export const UsersView: React.FC = () => {
                   <input
                     type="password"
                     required
+                    minLength={12}
                     value={newUserPassword}
                     onChange={(e) => setNewUserPassword(e.target.value)}
                     className="w-full px-3 py-2 border rounded-lg text-sm"
@@ -597,6 +622,48 @@ export const UsersView: React.FC = () => {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {resetPasswordUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form onSubmit={handleResetUserPassword} className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
+            <div>
+              <h3 className="text-base font-bold text-gray-900">Reset password</h3>
+              <p className="mt-1 text-xs text-gray-500">Set a new password for {resetPasswordUser.name}.</p>
+            </div>
+            <input
+              type="password"
+              required
+              minLength={12}
+              value={resetPassword}
+              onChange={(event) => setResetPassword(event.target.value)}
+              placeholder="New password (at least 12 characters)"
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            />
+            <input
+              type="password"
+              required
+              minLength={12}
+              value={resetPasswordConfirm}
+              onChange={(event) => setResetPasswordConfirm(event.target.value)}
+              placeholder="Confirm new password"
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            />
+            {resetPasswordError && <p className="text-xs font-semibold text-red-600">{resetPasswordError}</p>}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setResetPasswordUser(null)}
+                className="rounded-lg border px-4 py-2 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-amber-700 px-4 py-2 text-xs font-semibold text-white">
+                Reset password
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

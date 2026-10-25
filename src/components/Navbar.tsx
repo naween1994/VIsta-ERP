@@ -3,7 +3,6 @@ import {
   Bell, 
   Plus, 
   Sparkles, 
-  UserCheck, 
   ChevronDown, 
   Wifi, 
   WifiOff, 
@@ -28,7 +27,7 @@ export const Navbar: React.FC = () => {
     isRealtimeActive,
     settings
   } = useApp();
-  const { currentUser, users, switchUser, logout } = useAuth();
+  const { currentUser, logout } = useAuth();
 
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isNotifMenuOpen, setIsNotifMenuOpen] = useState(false);
@@ -190,29 +189,6 @@ export const Navbar: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="py-1">
-                    <p className="px-4 py-1 text-[10px] text-slate-400 uppercase tracking-wider font-bold">
-                      Switch User
-                    </p>
-                    {users.map((u) => (
-                      <button
-                        key={u.id}
-                        onClick={() => {
-                          switchUser(u.id);
-                          setIsUserMenuOpen(false);
-                        }}
-                        className={`w-full px-4 py-2 text-left text-xs flex items-center justify-between hover:bg-slate-50 transition ${
-                          currentUser?.id === u.id ? 'bg-blue-50 font-bold text-blue-950' : 'text-slate-700'
-                        }`}
-                      >
-                        <div>
-                          <div>{u.name}</div>
-                          <div className="text-[10px] text-slate-400 capitalize">{u.role.replace('_', ' ')}</div>
-                        </div>
-                        {currentUser?.id === u.id && <UserCheck className="w-4 h-4 text-blue-700" />}
-                      </button>
-                    ))}
-                  </div>
 
                   <div className="border-t border-slate-100 pt-1 space-y-0.5">
                     <button

@@ -1,17 +1,31 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { db } from '../db.ts';
 
 const router = Router();
 
+function safeSettings() {
+  return { ...db.getSettings(), mongoDbUri: '' };
+}
+
+function blockProductionDatabaseManagement(res: Response): boolean {
+  if (process.env.NODE_ENV !== 'production') return false;
+  res.status(409).json({
+    success: false,
+    message: 'Production database configuration is managed through GCP Secret Manager.',
+  });
+  return true;
+}
+
 // Get settings
 router.get('/', (req, res) => {
-  res.json({ success: true, settings: db.getSettings() });
+  res.json({ success: true, settings: safeSettings() });
 });
 
 // Update settings
 router.put('/', (req, res) => {
-  const updated = db.updateSettings(req.body);
-  res.json({ success: true, settings: updated });
+  const { mongoDbUri, ...updates } = req.body;
+  const updated = db.updateSettings({ ...updates, mongoDbUri: '' });
+  res.json({ success: true, settings: { ...updated, mongoDbUri: '' } });
 });
 
 import { mongoService } from '../mongo.ts';
@@ -22,12 +36,13 @@ router.get('/mongodb/status', (req, res) => {
   res.json({
     success: true,
     connected: mongoService.getConnected() || settings.mongoDbConnected,
-    uri: settings.mongoDbUri || process.env.MONGODB_URI || '',
+    configured: Boolean(process.env.MONGODB_URI),
   });
 });
 
 // Test MongoDB connection
 router.post('/mongodb/test', async (req, res) => {
+  if (blockProductionDatabaseManagement(res)) return;
   const { uri } = req.body;
   const targetUri = uri || process.env.MONGODB_URI || db.getSettings().mongoDbUri;
 
@@ -42,10 +57,7 @@ router.post('/mongodb/test', async (req, res) => {
   try {
     const result = await mongoService.testConnection(targetUri);
     if (result.success) {
-      db.updateSettings({
-        mongoDbConnected: true,
-        mongoDbUri: targetUri,
-      });
+      db.updateSettings({ mongoDbConnected: true, mongoDbUri: '' });
     }
     res.json(result);
   } catch (err: any) {
@@ -59,6 +71,7 @@ router.post('/mongodb/test', async (req, res) => {
 
 // Sync local data to MongoDB
 router.post('/mongodb/sync', async (req, res) => {
+  if (blockProductionDatabaseManagement(res)) return;
   const { uri } = req.body;
   const targetUri = uri || db.getSettings().mongoDbUri || process.env.MONGODB_URI;
 
@@ -68,7 +81,7 @@ router.post('/mongodb/sync', async (req, res) => {
 
   try {
     const result = await mongoService.syncToMongo(targetUri, db.getState());
-    db.updateSettings({ mongoDbConnected: true, mongoDbUri: targetUri });
+    db.updateSettings({ mongoDbConnected: true, mongoDbUri: '' });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Sync to MongoDB failed' });
@@ -77,6 +90,7 @@ router.post('/mongodb/sync', async (req, res) => {
 
 // Import data from MongoDB
 router.post('/mongodb/import', async (req, res) => {
+  if (blockProductionDatabaseManagement(res)) return;
   const { uri } = req.body;
   const targetUri = uri || db.getSettings().mongoDbUri || process.env.MONGODB_URI;
 
@@ -87,16 +101,7 @@ router.post('/mongodb/import', async (req, res) => {
   try {
     const result = await mongoService.fetchFromMongo(targetUri);
     if (result.success && result.data) {
-      if (result.data.products && result.data.products.length > 0) {
-        db.getState().products = result.data.products;
-      }
-      if (result.data.customers && result.data.customers.length > 0) {
-        db.getState().customers = result.data.customers;
-      }
-      if (result.data.orders && result.data.orders.length > 0) {
-        db.getState().orders = result.data.orders;
-      }
-      db.saveToDisk();
+      db.loadFromPersistentState(result.data);
     }
     res.json(result);
   } catch (err: any) {
@@ -106,6 +111,7 @@ router.post('/mongodb/import', async (req, res) => {
 
 // Initialize MongoDB database and seed collections
 router.post('/mongodb/init', async (req, res) => {
+  if (blockProductionDatabaseManagement(res)) return;
   const { uri, forceReseed } = req.body;
   const targetUri = uri || db.getSettings().mongoDbUri || process.env.MONGODB_URI;
 
@@ -118,10 +124,7 @@ router.post('/mongodb/init', async (req, res) => {
 
   try {
     const result = await mongoService.initializeDatabase(targetUri, db.getState(), Boolean(forceReseed));
-    db.updateSettings({
-      mongoDbConnected: true,
-      mongoDbUri: targetUri,
-    });
+    db.updateSettings({ mongoDbConnected: true, mongoDbUri: '' });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({
@@ -133,6 +136,12 @@ router.post('/mongodb/init', async (req, res) => {
 
 // Disconnect MongoDB
 router.post('/mongodb/disconnect', async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(409).json({
+      success: false,
+      message: 'MongoDB is the configured production database and cannot be disconnected from the app.',
+    });
+  }
   await mongoService.disconnect();
   db.updateSettings({ mongoDbConnected: false });
   res.json({
@@ -146,7 +155,7 @@ router.post('/mongodb/disconnect', async (req, res) => {
 router.post('/reset-defaults', (req, res) => {
   const { adminPassword } = req.body;
   const admin = db.getState().users.find((u) => u.role === 'admin');
-  if (admin?.password && admin.password !== adminPassword) {
+  if (!admin || !db.verifyUserPassword(admin.id, adminPassword)) {
     return res.status(403).json({ success: false, message: 'Invalid admin confirmation password' });
   }
 

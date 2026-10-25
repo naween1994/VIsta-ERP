@@ -16,16 +16,46 @@ import accountingRoutes from './server/routes/accounting.ts';
 import settingsRoutes from './server/routes/settings.ts';
 import { db, setRealtimeListener } from './server/db.ts';
 import { mongoService } from './server/mongo.ts';
+import { apiAuth } from './server/api-auth.ts';
 
 dotenv.config();
 
 const distPath = path.resolve(process.cwd(), 'dist');
 const hasDist = fs.existsSync(distPath) && fs.existsSync(path.join(distPath, 'index.html'));
-const isProduction = process.env.NODE_ENV === 'production' || hasDist;
+const isProduction = process.env.NODE_ENV === 'production' || (!process.env.NODE_ENV && hasDist);
 const envPort = process.env.PORT ? Number(process.env.PORT) : null;
 
 // Track active real-time SSE stream clients
 const sseClients = new Set<express.Response>();
+
+function waitForPersistentWrites(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (!isProduction) {
+    next();
+    return;
+  }
+
+  const sendJson = res.json.bind(res);
+  res.json = ((body: unknown) => {
+    mongoService.flushPendingWrites().then((successful) => {
+      if (!successful) {
+        res.status(503);
+        sendJson({ success: false, message: 'The database write did not complete. Please retry.' });
+        return;
+      }
+      sendJson(body);
+    }).catch((err) => {
+      console.error('[MongoDB] Failed waiting for database writes:', err);
+      res.status(503);
+      sendJson({ success: false, message: 'The database is unavailable. Please retry shortly.' });
+    });
+    return res;
+  }) as express.Response['json'];
+  next();
+}
 
 setRealtimeListener((entity, action, data) => {
   const payload = JSON.stringify({ entity, action, timestamp: Date.now(), data });
@@ -68,6 +98,16 @@ async function startServer() {
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy', uptime: process.uptime(), liveClients: sseClients.size });
   });
+
+  app.get('/api/config', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || '',
+    });
+  });
+
+  app.use('/api', apiAuth);
+  app.use('/api', waitForPersistentWrites);
 
   // Real-time Server-Sent Events (SSE) Stream
   app.get('/api/realtime/stream', (req, res) => {
@@ -116,6 +156,7 @@ async function startServer() {
       data: {
         ...state,
         users: safeUsers,
+        settings: { ...state.settings, mongoDbUri: '' },
       },
     });
   });
@@ -150,6 +191,33 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
+  if (isProduction) {
+    const mongoUri = process.env.MONGODB_URI;
+    const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+    if (!mongoUri || !mongoUri.startsWith('mongodb')) {
+      throw new Error('MONGODB_URI must be configured for production.');
+    }
+    if (!initialAdminPassword) {
+      throw new Error('INITIAL_ADMIN_PASSWORD must be configured for production.');
+    }
+    if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
+      throw new Error('SESSION_SECRET must be configured with at least 32 characters in production.');
+    }
+
+    db.prepareForProduction(initialAdminPassword);
+    await mongoService.initializeDatabase(mongoUri, db.getState(), false);
+    const persistentState = await mongoService.fetchFromMongo(mongoUri);
+    if (!persistentState.success || !persistentState.data) {
+      throw new Error(`Unable to load the production database: ${persistentState.message}`);
+    }
+    db.loadFromPersistentState(persistentState.data);
+    db.prepareForProduction(initialAdminPassword);
+    db.updateSettings({ mongoDbConnected: true, mongoDbUri: '' });
+    if (!(await mongoService.flushPendingWrites())) {
+      throw new Error('Failed to persist production user or settings migrations to MongoDB.');
+    }
+  }
+
   // Ensure port 3000 is always listening for AI Studio TCP probes
   await createServerListener(app, 3000);
 
@@ -158,22 +226,6 @@ async function startServer() {
     await createServerListener(app, envPort);
   }
 
-  // If MONGODB_URI is provided, initialize database in background
-  const mongoUriEnv = process.env.MONGODB_URI;
-  if (mongoUriEnv && (mongoUriEnv.startsWith('mongodb://') || mongoUriEnv.startsWith('mongodb+srv://'))) {
-    console.log('[MongoDB] Auto-connecting to configured MONGODB_URI...');
-    mongoService.testConnection(mongoUriEnv).then(async (res) => {
-      if (res.success) {
-        console.log('[MongoDB] Connected! Initializing database collections & indexes...');
-        mongoService.initializeDatabase(mongoUriEnv, db.getState(), false)
-          .then((initRes) => {
-            console.log('[MongoDB]', initRes.message);
-            db.updateSettings({ mongoDbConnected: true, mongoDbUri: mongoUriEnv });
-          })
-          .catch((err) => console.warn('[MongoDB Init Notice]', err.message));
-      }
-    }).catch((err) => console.warn('[MongoDB Connect Notice]', err.message));
-  }
 }
 
 startServer().catch((err) => {

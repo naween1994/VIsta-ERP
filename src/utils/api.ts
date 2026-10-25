@@ -32,6 +32,12 @@ export const api = {
   },
 
   // Auth & Users
+  async getSession(): Promise<User | null> {
+    const res = await fetch(`${API_BASE}/auth/session`);
+    const json = await res.json();
+    return json.user || null;
+  },
+
   async getUsers(): Promise<User[]> {
     const res = await fetch(`${API_BASE}/auth/users`);
     const json = await res.json();
@@ -49,15 +55,9 @@ export const api = {
     return json.user;
   },
 
-  async switchUser(userId: string): Promise<User> {
-    const res = await fetch(`${API_BASE}/auth/switch-user`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.success) throw new Error(json.message || 'Failed to switch user');
-    return json.user;
+  async logout(): Promise<void> {
+    const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to end the session.');
   },
 
   async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
@@ -78,6 +78,17 @@ export const api = {
     });
     const json = await res.json();
     if (!res.ok || !json.success) throw new Error(json.message || 'Failed to create user');
+    return json.user;
+  },
+
+  async updateUser(userId: string, updates: Partial<User>): Promise<User> {
+    const res = await fetch(`${API_BASE}/auth/users/${userId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.success) throw new Error(json.message || 'Failed to update user');
     return json.user;
   },
 

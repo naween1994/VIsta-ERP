@@ -1,0 +1,18 @@
+steps:
+  - name: oven/bun:1
+    entrypoint: bun
+    args: ["install", "--frozen-lockfile"]
+  - name: oven/bun:1
+    entrypoint: bun
+    args: ["run", "import:data"]
+    secretEnv:
+      - MONGODB_URI
+      - INITIAL_ADMIN_PASSWORD
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/vista-erp-mongodb-uri/versions/latest
+      env: MONGODB_URI
+    - versionName: projects/$PROJECT_ID/secrets/vista-erp-admin-password/versions/latest
+      env: INITIAL_ADMIN_PASSWORD
+options:
+  logging: CLOUD_LOGGING_ONLY

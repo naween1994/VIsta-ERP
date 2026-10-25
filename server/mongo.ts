@@ -20,6 +20,16 @@ export class MongoService {
   private activeClient: MongoClient | null = null;
   private activeUri: string | null = null;
   private isConnected: boolean = false;
+  private pendingWrites = new Set<Promise<boolean>>();
+
+  public async flushPendingWrites(): Promise<boolean> {
+    let successful = true;
+    while (this.pendingWrites.size > 0) {
+      const results = await Promise.all([...this.pendingWrites]);
+      successful = results.every(Boolean) && successful;
+    }
+    return successful;
+  }
 
   public getConnected(): boolean {
     return this.isConnected;
@@ -234,8 +244,15 @@ export class MongoService {
       const rawCustomers = await db.collection('customers').find({}).toArray();
       const rawOrders = await db.collection('orders').find({}).toArray();
       const rawAdjustments = await db.collection('stock_adjustments').find({}).toArray();
+      const rawUsers = await db.collection('users').find({}).toArray();
+      const rawNotifications = await db.collection('notifications').find({}).toArray();
+      const rawAccountingLogs = await db.collection('accounting_logs').find({}).toArray();
+      const rawDeliveryRoutes = await db.collection('delivery_routes').find({}).toArray();
+      const settingsCollection = db.collection('settings');
+      const rawSettings = await settingsCollection.findOne({ id: 'current' })
+        || await settingsCollection.findOne({});
 
-      const sanitize = (docs: any[]) =>
+      const sanitize = (docs: Record<string, any>[]) =>
         docs.map(({ _id, ...rest }) => ({
           ...rest,
           id: rest.id || _id?.toString(),
@@ -251,8 +268,15 @@ export class MongoService {
           customers: sanitize(rawCustomers) as any,
           orders: sanitize(rawOrders) as any,
           stockAdjustments: sanitize(rawAdjustments) as any,
+          users: sanitize(rawUsers) as any,
+          notifications: sanitize(rawNotifications) as any,
+          accountingLogs: sanitize(rawAccountingLogs) as any,
+          deliveryRoutes: sanitize(rawDeliveryRoutes) as any,
+          settings: rawSettings
+            ? (({ _id, ...settings }) => ({ ...settings, mongoDbUri: '' }))(rawSettings as any) as any
+            : undefined,
         },
-        message: `Fetched ${rawProducts.length} products, ${rawCustomers.length} customers, and ${rawOrders.length} orders from MongoDB.`,
+        message: `Fetched ${rawProducts.length} products, ${rawCustomers.length} customers, ${rawOrders.length} orders, and ${rawUsers.length} users from MongoDB.`,
       };
     } finally {
       if (shouldClose && client) {
@@ -312,6 +336,7 @@ export class MongoService {
         'users',
         'notifications',
         'accounting_logs',
+        'delivery_routes',
         'settings',
       ];
 
@@ -355,19 +380,31 @@ export class MongoService {
       const usrCol = db.collection('users');
       const settCol = db.collection('settings');
 
-      const existingProdCount = await prodCol.countDocuments();
+      const dataCollections = [
+        'products',
+        'customers',
+        'orders',
+        'stock_adjustments',
+        'users',
+        'notifications',
+        'accounting_logs',
+        'delivery_routes',
+      ];
+      const dataCounts = await Promise.all(
+        dataCollections.map((name) => db.collection(name).countDocuments())
+      );
+      const hasExistingData = dataCounts.some((count) => count > 0);
       let seededProducts = 0;
       let seededCustomers = 0;
       let seededOrders = 0;
       let seededUsers = 0;
 
-      if (existingProdCount === 0 || forceReseed) {
+      if (!hasExistingData || forceReseed) {
         if (forceReseed) {
-          await prodCol.deleteMany({});
-          await custCol.deleteMany({});
-          await ordCol.deleteMany({});
-          await usrCol.deleteMany({});
-          await settCol.deleteMany({});
+          await Promise.all([
+            ...dataCollections.map((name) => db.collection(name).deleteMany({})),
+            settCol.deleteMany({}),
+          ]);
         }
 
         // Seed 17 official spices
@@ -394,15 +431,33 @@ export class MongoService {
           seededUsers = state.users.length;
         }
 
+        if (state.stockAdjustments.length > 0) {
+          await db.collection('stock_adjustments').insertMany(state.stockAdjustments.map((item) => ({ ...item })) as any);
+        }
+        if (state.notifications.length > 0) {
+          await db.collection('notifications').insertMany(state.notifications.map((item) => ({ ...item })) as any);
+        }
+        if (state.accountingLogs.length > 0) {
+          await db.collection('accounting_logs').insertMany(state.accountingLogs.map((item) => ({ ...item })) as any);
+        }
+        if (state.deliveryRoutes.length > 0) {
+          await db.collection('delivery_routes').insertMany(state.deliveryRoutes.map((item) => ({ ...item })) as any);
+        }
+
         // Seed settings
-        await settCol.insertOne({
-          ...state.settings,
-          mongoDbConnected: true,
-          mongoDbUri: uri,
-          initializedAt: new Date().toISOString(),
-        } as any);
+        await settCol.replaceOne(
+          { id: 'current' },
+          {
+            ...state.settings,
+            id: 'current',
+            mongoDbConnected: true,
+            mongoDbUri: '',
+            initializedAt: new Date().toISOString(),
+          } as any,
+          { upsert: true }
+        );
       } else {
-        seededProducts = existingProdCount;
+        seededProducts = await prodCol.countDocuments();
         seededCustomers = await custCol.countDocuments();
         seededOrders = await ordCol.countDocuments();
         seededUsers = await usrCol.countDocuments();
@@ -435,19 +490,24 @@ export class MongoService {
     if (!this.isConnected || !this.activeClient) {
       return false;
     }
-    try {
-      const db = this.activeClient.db();
-      const { id: docId, ...rest } = doc;
-      await db.collection(collectionName).updateOne(
-        { id },
-        { $set: { ...rest, id, updatedAt: new Date().toISOString() } },
-        { upsert: true }
-      );
-      return true;
-    } catch (err: any) {
-      console.warn(`[MongoDB Realtime ${collectionName} Upsert Notice]`, err.message);
-      return false;
-    }
+    const operation = (async () => {
+      try {
+        const db = this.activeClient!.db();
+        const { id: docId, ...rest } = doc;
+        await db.collection(collectionName).updateOne(
+          { id },
+          { $set: { ...rest, id, updatedAt: new Date().toISOString() } },
+          { upsert: true }
+        );
+        return true;
+      } catch (err: any) {
+        console.warn(`[MongoDB Realtime ${collectionName} Upsert Notice]`, err.message);
+        return false;
+      }
+    })();
+    this.pendingWrites.add(operation);
+    void operation.then(() => this.pendingWrites.delete(operation));
+    return operation;
   }
 
   /**
@@ -457,14 +517,19 @@ export class MongoService {
     if (!this.isConnected || !this.activeClient) {
       return false;
     }
-    try {
-      const db = this.activeClient.db();
-      await db.collection(collectionName).deleteOne({ id });
-      return true;
-    } catch (err: any) {
-      console.warn(`[MongoDB Realtime ${collectionName} Delete Notice]`, err.message);
-      return false;
-    }
+    const operation = (async () => {
+      try {
+        const db = this.activeClient!.db();
+        await db.collection(collectionName).deleteOne({ id });
+        return true;
+      } catch (err: any) {
+        console.warn(`[MongoDB Realtime ${collectionName} Delete Notice]`, err.message);
+        return false;
+      }
+    })();
+    this.pendingWrites.add(operation);
+    void operation.then(() => this.pendingWrites.delete(operation));
+    return operation;
   }
 }
 

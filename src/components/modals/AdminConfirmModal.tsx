@@ -65,7 +65,7 @@ export const AdminConfirmModal: React.FC<AdminConfirmModalProps> = ({
           <p className="text-sm text-gray-600 leading-relaxed">{message}</p>
 
           <div className="bg-amber-50/60 p-3 rounded-lg text-xs text-amber-900 border border-amber-200/60">
-            <strong>Security Notice:</strong> This action requires confirmation from an Administrator. (Default: <code>password123</code>)
+            <strong>Security Notice:</strong> This action requires confirmation from an Administrator.
           </div>
 
           <div>

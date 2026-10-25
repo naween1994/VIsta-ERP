@@ -7,9 +7,7 @@ interface AuthContextType {
   users: User[];
   isLoading: boolean;
   login: (email: string, password?: string) => Promise<User>;
-  loginDirect: (user: User) => void;
   logout: () => void;
-  switchUser: (userId: string) => Promise<void>;
   hasPermission: (permission: string) => boolean;
   isAdmin: boolean;
   isInventoryManager: boolean;
@@ -19,8 +17,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SESSION_STORAGE_KEY = 'na_dist_session_user_id';
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -28,19 +24,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const refreshUsers = async () => {
     try {
-      const userList = await api.getUsers();
-      setUsers(userList);
-
-      // Only restore user if they explicitly had an active session stored
-      const savedUserId = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (savedUserId && userList.length > 0) {
-        const found = userList.find((u) => u.id === savedUserId);
-        if (found) {
-          setCurrentUser(found);
-        }
+      const sessionUser = await api.getSession();
+      setCurrentUser(sessionUser);
+      if (sessionUser?.role === 'admin' || sessionUser?.permissions.includes('all')) {
+        setUsers(await api.getUsers());
+      } else {
+        setUsers([]);
       }
     } catch (err) {
       console.warn('Failed to load users from backend:', err);
+      setUsers([]);
     } finally {
       setIsLoading(false);
     }
@@ -53,33 +46,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password?: string): Promise<User> => {
     const user = await api.login(email, password);
     setCurrentUser(user);
-    localStorage.setItem(SESSION_STORAGE_KEY, user.id);
+    if (user.role === 'admin' || user.permissions.includes('all')) {
+      try {
+        setUsers(await api.getUsers());
+      } catch (err) {
+        console.warn('Failed to load the administrator user directory:', err);
+        setUsers([]);
+      }
+    } else {
+      setUsers([]);
+    }
     return user;
-  };
-
-  const loginDirect = (user: User) => {
-    setCurrentUser(user);
-    localStorage.setItem(SESSION_STORAGE_KEY, user.id);
   };
 
   const logout = () => {
     setCurrentUser(null);
-    localStorage.removeItem(SESSION_STORAGE_KEY);
-  };
-
-  const switchUser = async (userId: string) => {
-    try {
-      const user = await api.switchUser(userId);
-      setCurrentUser(user);
-      localStorage.setItem(SESSION_STORAGE_KEY, user.id);
-    } catch (err: any) {
-      // Fallback in-memory switch
-      const found = users.find((u) => u.id === userId);
-      if (found) {
-        setCurrentUser(found);
-        localStorage.setItem(SESSION_STORAGE_KEY, found.id);
-      }
-    }
+    setUsers([]);
+    api.logout().catch((err) => console.warn('Failed to end server session:', err));
   };
 
   const hasPermission = (permission: string): boolean => {
@@ -99,9 +82,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         users,
         isLoading,
         login,
-        loginDirect,
         logout,
-        switchUser,
         hasPermission,
         isAdmin,
         isInventoryManager,

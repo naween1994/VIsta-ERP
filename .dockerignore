@@ -1,0 +1,11 @@
+.git
+.gmp_cache
+.aistudio
+node_modules
+dist
+coverage
+data
+.env
+.env.*
+!.env.example
+*.log
